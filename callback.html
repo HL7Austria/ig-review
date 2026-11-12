@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signing in… · HL7 Austria IG review</title>
+<style>body{font:15px system-ui,sans-serif;margin:15vh auto;max-width:520px;color:#1d232b;text-align:center}.err{color:#cf222e}</style>
+</head>
+<body>
+<p id="msg">Signing in with GitHub…</p>
+<script>
+// Single GitHub sign-in return page for every IG on fhir.hl7.at that loads review.js.
+// Swaps the one-time code for a user token (via the Cloudflare Worker that holds the app secret),
+// keeps it in sessionStorage (this tab, this origin only) and goes back to the page you came from.
+(async function () {
+  const TOKEN_URL = "https://hl7at-ig-comparison-auth.p40984-15b.workers.dev/token";
+  const msg = document.getElementById("msg");
+  const fail = t => { msg.className = "err"; msg.textContent = t; };
+  const q = new URLSearchParams(location.search);
+  const back = sessionStorage.getItem("igr-return") || "/";
+  const state = sessionStorage.getItem("igr-state");
+  sessionStorage.removeItem("igr-state");
+  if (q.get("error")) { fail("Sign-in cancelled: " + (q.get("error_description") || q.get("error"))); setTimeout(() => location.replace(back), 2500); return; }
+  if (!q.get("code") || !state || q.get("state") !== state) { fail("Sign-in failed (state mismatch). Please go back and try again."); return; }
+  try {
+    const r = await fetch(TOKEN_URL, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({code: q.get("code")})});
+    const t = await r.json();
+    if (!r.ok || !t.access_token) throw new Error(t.error_description || t.error || "HTTP " + r.status);
+    sessionStorage.setItem("igr-auth", JSON.stringify({token: t.access_token, exp: Date.now() + ((t.expires_in || 28800) - 60) * 1000, refresh: t.refresh_token || null}));
+    sessionStorage.removeItem("igr-return");
+    // only return to pages on this site
+    const u = new URL(back, location.href);
+    location.replace(u.origin === location.origin ? u.href : "/");
+  } catch (e) { fail("Sign-in failed: " + e.message); }
+})();
+</script>
+</body>
+</html>
