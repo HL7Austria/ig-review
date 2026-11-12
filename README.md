@@ -15,7 +15,8 @@ Served from GitHub Pages: `https://fhir.hl7.at/ig-review/review.js`.
 2. **Readers** select text → **💬 Comment** → fill in the form → *Sign in with GitHub* → an issue is created
    in the IG repo under their own GitHub account. The panel (button bottom right) lists all comments
    of the page; marked passages are highlighted and numbered with the issue number. Click one to read
-   it, its discussion, and reply.
+   it, its discussion, and reply. The **All pages** tab lists every comment of the build grouped by page
+   (filter by type and open/closed); a click opens the page with that comment.
 3. **CI labels the issue and writes a comment index** (`tools/build_index.py`) to `review-index.json`
    next to the published pages, so pages load the comments without hitting GitHub API limits.
    Signed-in users additionally get changes since the index was built live from the API.

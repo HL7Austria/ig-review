@@ -40,6 +40,8 @@
   const fmt = iso => { try { return new Date(iso).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"}); } catch (e) { return iso; } };
 
   let ROOT, ITEMS = [], USER = null, TOKEN = null, ACTIVE = null, LOCATED = new Map();
+  let VIEW = "page", FILTER = {type: "", state: "open"};
+  const pageName = it => it.meta.pageTitle || it.meta.page.replace(/\.html$/, "");
 
   /* ------------------------------------------------------------------ text index + anchoring */
   function textNodes(root) {
@@ -207,7 +209,6 @@
   }
   // signed in: pick up issues changed after the index was built
   async function loadLive() {
-    if (!TOKEN) return;
     const since = CFG.indexAt ? "&since=" + encodeURIComponent(CFG.indexAt) : "";
     try {
       const list = await gh(`/repos/${CFG.repo}/issues?state=all&per_page=100&sort=updated${since}`);
@@ -297,7 +298,7 @@
   function updateLauncher() {
     if (!launcher) return;
     const here = ITEMS.filter(i => i.meta.page === PAGE).length;
-    launcher.innerHTML = "&#128172; " + (CFG.mode === "ballot" ? "Ballot" : "Review") + " &middot; " + here + " on this page";
+    launcher.innerHTML = "&#128172; " + (CFG.mode === "ballot" ? "Ballot" : "Review") + " &middot; " + here + " here &middot; " + ITEMS.length + " total";
     launcher.classList.toggle("ballot", CFG.mode === "ballot");
   }
   function togglePanel(force) {
@@ -323,18 +324,43 @@
     panel.innerHTML = h;
     wirePanel();
   }
+  function tabsHTML() {
+    const here = ITEMS.filter(i => i.meta.page === PAGE).length;
+    return '<div class="igr-tabs"><button class="igr-tab' + (VIEW === "page" ? " on" : "") + '" data-view="page">This page (' + here + ')</button>' +
+      '<button class="igr-tab' + (VIEW === "all" ? " on" : "") + '" data-view="all">All pages (' + ITEMS.length + ')</button></div>';
+  }
+  function allHTML() {
+    const types = [...new Set(ITEMS.map(i => i.meta.type).filter(Boolean))].sort();
+    const vis = ITEMS.filter(i => (!FILTER.type || i.meta.type === FILTER.type) && (FILTER.state === "all" || i.state === FILTER.state));
+    const groups = new Map();
+    vis.slice().sort((a, b) => pageName(a).localeCompare(pageName(b)) || a.number - b.number).forEach(i => { const k = i.meta.page; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+    let h = '<div class="igr-body">' + tabsHTML() +
+      '<div class="igr-filter"><select id="igr-ftype"><option value="">all types</option>' + types.map(t => '<option' + (FILTER.type === t ? " selected" : "") + '>' + esc(t) + '</option>').join("") + '</select>' +
+      '<select id="igr-fstate">' + [["open", "open"], ["closed", "closed"], ["all", "open + closed"]].map(([v, l]) => '<option value="' + v + '"' + (FILTER.state === v ? " selected" : "") + '>' + l + '</option>').join("") + '</select>' +
+      '<span class="igr-muted">' + vis.length + ' of ' + ITEMS.length + '</span></div>';
+    if (!vis.length) h += '<p class="igr-muted">No comments match.</p>';
+    groups.forEach((items, page) => {
+      h += '<div class="igr-page"><a class="igr-page-h" href="' + esc(page) + '">' + esc(pageName(items[0])) + '</a>' + (page === PAGE ? ' <span class="igr-muted">(this page)</span>' : "") + '</div>';
+      h += items.map(i => '<a class="igr-card igr-mini' + (i.state === "closed" ? " closed" : "") + '" href="' + esc(page) + '#igr=' + i.number + '" data-goto="' + i.number + '" data-page="' + esc(page) + '">' +
+        '<div class="igr-card-h">#' + i.number + ' ' + typeBadge(i.meta.type) + (i.state === "closed" ? ' <span class="igr-type">closed</span>' : "") +
+        ((i.comments && i.comments.length) || i.commentCount ? ' <span class="igr-muted">&#128172; ' + ((i.comments && i.comments.length) || i.commentCount) + '</span>' : "") +
+        '<span class="igr-by">' + esc(i.author) + '</span></div><div class="igr-q">' + esc(i.meta.quote.exact.slice(0, 100)) + (i.meta.quote.exact.length > 100 ? "&hellip;" : "") + '</div></a>').join("");
+    });
+    return h + '</div>';
+  }
   function listHTML() {
+    if (VIEW === "all") return allHTML();
     const here = ITEMS.filter(i => i.meta.page === PAGE).sort((a, b) => ((a.meta.position || {}).start || 0) - ((b.meta.position || {}).start || 0));
     const lost = here.filter(i => !LOCATED.has(i.number)), found = here.filter(i => LOCATED.has(i.number));
     const card = i => '<div class="igr-card' + (i.state === "closed" ? " closed" : "") + '" data-open="' + i.number + '"><div class="igr-card-h">#' + i.number + ' ' + typeBadge(i.meta.type) +
       (i.state === "closed" ? ' <span class="igr-type">closed</span>' : "") + '<span class="igr-by">' + esc(i.author) + '</span></div>' +
       '<div class="igr-q">' + esc(i.meta.quote.exact.slice(0, 140)) + (i.meta.quote.exact.length > 140 ? "&hellip;" : "") + '</div>' +
       '<div class="igr-t">' + esc(i.title.replace(/^\[[^\]]+\]\s*/, "")) + '</div></div>';
-    let h = '<div class="igr-body"><p class="igr-hint">Select text on the page and click <b>&#128172; Comment</b> to add a ' + (CFG.mode === "ballot" ? "ballot comment" : "comment") + '.</p>';
+    let h = '<div class="igr-body">' + tabsHTML() + '<p class="igr-hint">Select text on the page and click <b>&#128172; Comment</b> to add a ' + (CFG.mode === "ballot" ? "ballot comment" : "comment") + '.</p>';
     h += found.length ? found.map(card).join("") : '<p class="igr-muted">No comments on this page yet.</p>';
     if (lost.length) h += '<div class="igr-h">Can no longer be located on this page</div>' + lost.map(card).join("");
     const other = ITEMS.length - here.length;
-    if (other) h += '<p class="igr-muted">' + other + ' more on other pages of this build.</p>';
+    if (other) h += '<p class="igr-muted"><button class="igr-link" data-view="all">' + other + ' more on other pages &rarr;</button></p>';
     return h + '</div>';
   }
   function itemHTML(it) {
@@ -381,6 +407,11 @@
   function wirePanel() {
     panel.querySelectorAll("[data-act]").forEach(b => b.onclick = () => act(b.dataset.act));
     panel.querySelectorAll("[data-open]").forEach(c => c.onclick = () => openItem(+c.dataset.open));
+    panel.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { VIEW = b.dataset.view; renderPanel(); });
+    panel.querySelectorAll("[data-goto]").forEach(a => a.onclick = e => { if (a.dataset.page === PAGE) { e.preventDefault(); openItem(+a.dataset.goto); } });
+    const ft = panel.querySelector("#igr-ftype"), fs = panel.querySelector("#igr-fstate");
+    if (ft) ft.onchange = () => { FILTER.type = ft.value; renderPanel(); };
+    if (fs) fs.onchange = () => { FILTER.state = fs.value; renderPanel(); };
   }
   async function act(a) {
     if (a === "close") { readDraft(); togglePanel(false); return; }
@@ -402,7 +433,7 @@
     setTimeout(() => { const t = document.getElementById("igr-text"); if (t) t.focus(); }, 30);
   }
   function issueBody(d) {
-    const meta = {v: 1, page: PAGE, branch: CFG.branch, commit: CFG.commit, mode: CFG.mode, type: d.type,
+    const meta = {v: 1, page: PAGE, pageTitle: (document.title || "").replace(/\s+-\s+v?[\d.]+.*$/, "").trim() || undefined, branch: CFG.branch, commit: CFG.commit, mode: CFG.mode, type: d.type,
       inPerson: CFG.mode === "ballot" ? !!d.inPerson : undefined, quote: d.anchor.quote, position: d.anchor.position,
       context: d.anchor.context, url: location.origin + location.pathname};
     const where = [ "`" + PAGE + "`", (d.anchor.context || {}).element ? "`" + d.anchor.context.element + "`" : (d.anchor.context || {}).heading ? "*" + d.anchor.context.heading + "*" : "" ].filter(Boolean).join(", ");
@@ -469,6 +500,7 @@
     }
     const m = location.hash.match(/igr=(\d+)/);
     if (m) openItem(+m[1]);
+    window.addEventListener("hashchange", () => { const h = location.hash.match(/igr=(\d+)/); if (h) openItem(+h[1]); });
     loadLive();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
