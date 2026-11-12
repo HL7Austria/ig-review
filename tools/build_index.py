@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Comment index + labels for the IG review tool.
+"""Labels (CI) and an optional export of the review comments.
 
-    # index of all review comments of one branch (written next to the published IG pages)
+The pages read the comments live from the GitHub API; nothing here is published to the site.
+
+    # export all review comments of one branch as JSON (e.g. for ballot reconciliation)
     python3 build_index.py --repo HL7Austria/AIST-TrustworthyAI-R5 --branch main --out output/review-index.json
 
     # after an issue event: label that issue from its hidden anchor block, print its branch

@@ -18,7 +18,6 @@
     repo: ME.dataset.repo,
     branch: ME.dataset.branch || "main",
     commit: ME.dataset.commit || "",
-    index: ME.dataset.index || "review-index.json",
     clientId: ME.dataset.clientId || "Iv23li4OcsdZoj3gsUeY",
     tokenUrl: ME.dataset.tokenUrl || "https://hl7at-ig-comparison-auth.p40984-15b.workers.dev/token",
     base: new URL(".", ME.src).href,
@@ -194,38 +193,72 @@
       avatar: i.user.avatar_url, created: i.created_at, body_html: i.body_html || "", meta,
       labels: (i.labels || []).map(l => l.name), comments: null, commentCount: i.comments};
   }
-  async function loadIndex() {
-    try {
-      const r = await fetch(CFG.index, {cache: "no-cache"});
-      if (r.ok) { const d = await r.json(); ITEMS = d.items || []; CFG.indexAt = d.generated; }
-    } catch (e) { /* no index yet */ }
+  // All review comments come straight from the GitHub API: no index file, no site rebuilds.
+  // Every GET is cached in localStorage (shared by all pages of the site) with its ETag:
+  //  - signed in: always revalidated with If-None-Match; GitHub answers 304 for unchanged data and
+  //    does not count that against the user's limit (5000/h), so readers always see the live state.
+  //  - not signed in: GitHub counts every request against 60/h per network, even a 304, so a cached
+  //    answer younger than 60 s is reused without asking.
+  // If GitHub refuses (rate limit, offline), the cached answer is used and the panel says so.
+  const HDR = () => { const h = {"Accept": "application/vnd.github.full+json", "X-GitHub-Api-Version": "2022-11-28"}; if (TOKEN) h.Authorization = "Bearer " + TOKEN; return h; };
+  const cacheGet = url => { try { return JSON.parse(localStorage.getItem("igr-http:" + url) || "null"); } catch (e) { return null; } };
+  const cachePut = (url, v) => { try { localStorage.setItem("igr-http:" + url, JSON.stringify(v)); } catch (e) { /* storage full: work without cache */ } };
+  let STALE = null;
+  async function getJSON(url) {
+    const c = cacheGet(url);
+    if (c && !TOKEN && Date.now() - c.at < 60000) return c;
+    const h = HDR();
+    if (c && c.etag) h["If-None-Match"] = c.etag;
+    let r;
+    try { r = await fetch(url, {headers: h, cache: "no-store"}); }
+    catch (e) { if (c) { STALE = STALE || {at: c.at, why: "offline"}; return c; } throw e; }
+    if (r.status === 304 && c) { c.at = Date.now(); cachePut(url, c); return c; }
+    if (!r.ok) {
+      const limited = r.status === 403 || r.status === 429;
+      if (c) { STALE = STALE || {at: c.at, why: limited ? "limit" : "error"}; return c; }
+      const e = new Error(r.status + " " + (await r.text()).slice(0, 200)); e.status = r.status; throw e;
+    }
+    const m = /<([^>]+)>;\s*rel="next"/.exec(r.headers.get("Link") || "");
+    const v = {etag: r.headers.get("ETag"), at: Date.now(), next: m ? m[1] : null, data: await r.json()};
+    cachePut(url, v);
+    return v;
+  }
+  async function ghAll(path) {
+    let url = API + path, out = [];
+    while (url) { const v = await getJSON(url); out = out.concat(v.data); url = v.next; }
+    return out;
   }
   async function gh(path, opts) {
-    const h = {"Accept": "application/vnd.github.full+json", "X-GitHub-Api-Version": "2022-11-28"};
-    if (TOKEN) h.Authorization = "Bearer " + TOKEN;
-    const r = await fetch(API + path, Object.assign({headers: h}, opts || {}));
+    if (!opts || !opts.method || opts.method === "GET") return (await getJSON(API + path)).data;
+    const r = await fetch(API + path, Object.assign({headers: HDR()}, opts));
     if (!r.ok) { const e = new Error(r.status + " " + (await r.text()).slice(0, 200)); e.status = r.status; throw e; }
     return r.status === 204 ? null : r.json();
   }
-  // signed in: pick up issues changed after the index was built
-  async function loadLive() {
-    const since = CFG.indexAt ? "&since=" + encodeURIComponent(CFG.indexAt) : "";
-    try {
-      const list = await gh(`/repos/${CFG.repo}/issues?state=all&per_page=100&sort=updated${since}`);
-      let changed = false;
-      for (const i of list) {
-        if (i.pull_request) continue;
-        const it = fromIssue(i);
-        if (!it || it.meta.branch !== CFG.branch) continue;
-        const k = ITEMS.findIndex(x => x.number === it.number);
-        if (k >= 0) { it.comments = ITEMS[k].comments; ITEMS[k] = it; } else ITEMS.push(it);
-        changed = true;
-      }
-      if (changed) { renderHighlights(); renderPanel(); }
-    } catch (e) { /* keep index data */ }
+  let NOTICE = "";
+  function setItems(all) {
+    const old = new Map(ITEMS.map(i => [i.number, i]));
+    ITEMS = all.filter(i => (i.meta.branch || "main") === CFG.branch).map(i => {
+      const o = old.get(i.number);
+      if (o && o.comments && o.commentCount === i.commentCount) i.comments = o.comments;
+      return i;
+    });
   }
+  async function loadIssues() {
+    STALE = null;
+    try {
+      const list = await ghAll(`/repos/${CFG.repo}/issues?state=all&per_page=100`);
+      setItems(list.filter(i => !i.pull_request).map(fromIssue).filter(Boolean));
+      NOTICE = !STALE ? "" : STALE.why === "limit"
+        ? "GitHub's limit for readers who are not signed in is reached (60 requests per hour per network). Showing the state of " + fmt(new Date(STALE.at).toISOString()) + ". Sign in with GitHub to see the comments live."
+        : "GitHub could not be reached. Showing the state of " + fmt(new Date(STALE.at).toISOString()) + ".";
+    } catch (e) {
+      NOTICE = e.status === 403 || e.status === 429
+        ? "GitHub's limit for readers who are not signed in is reached (60 requests per hour per network). Sign in with GitHub to see the comments."
+        : "Could not load the comments from GitHub (" + String(e.message).slice(0, 80) + ").";
+    }
+  }
+  async function reload() { await loadIssues(); renderHighlights(); renderPanel(); }
   async function loadThread(it) {
-    if (!TOKEN && it.comments) return;
     try {
       const cs = await gh(`/repos/${CFG.repo}/issues/${it.number}/comments?per_page=100`);
       it.comments = cs.map(c => ({author: c.user.login, avatar: c.user.avatar_url, created: c.created_at, url: c.html_url, body_html: c.body_html || ""}));
@@ -305,7 +338,7 @@
     const on = force != null ? force : !panel.classList.contains("on");
     panel.classList.toggle("on", on);
     document.body.classList.toggle("igr-open", on);
-    if (on) renderPanel();
+    if (on) { renderPanel(); if (!draft) reload(); }
   }
   function headHTML() {
     const who = USER ? '<img src="' + esc(USER.avatar_url) + '&s=40" alt=""><span>' + esc(USER.login) + '</span><button class="igr-link" data-act="out">Sign out</button>'
@@ -318,6 +351,7 @@
   function renderPanel() {
     if (!panel || !panel.classList.contains("on")) return;
     let h = headHTML();
+    if (NOTICE) h += '<div class="igr-notice">' + esc(NOTICE) + '</div>';
     if (draft) h += draftHTML();
     else if (ACTIVE != null) h += itemHTML(ITEMS.find(i => i.number === ACTIVE));
     else h += listHTML();
@@ -487,7 +521,8 @@
   async function start() {
     ROOT = document.getElementById("segment-content") || document.querySelector("main") || document.body;
     buildUI();
-    await Promise.all([loadIndex(), initAuth()]);
+    await initAuth();
+    await loadIssues();
     renderHighlights();
     let pending = null;
     try { pending = JSON.parse(sessionStorage.getItem(KEY.pending) || "null"); } catch (e) {}
@@ -501,7 +536,6 @@
     const m = location.hash.match(/igr=(\d+)/);
     if (m) openItem(+m[1]);
     window.addEventListener("hashchange", () => { const h = location.hash.match(/igr=(\d+)/); if (h) openItem(+h[1]); });
-    loadLive();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
 })();

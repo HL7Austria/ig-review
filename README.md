@@ -17,9 +17,13 @@ Served from GitHub Pages: `https://fhir.hl7.at/ig-review/review.js`.
    of the page; marked passages are highlighted and numbered with the issue number. Click one to read
    it, its discussion, and reply. The **All pages** tab lists every comment of the build grouped by page
    (filter by type and open/closed); a click opens the page with that comment.
-3. **CI labels the issue and writes a comment index** (`tools/build_index.py`) to `review-index.json`
-   next to the published pages, so pages load the comments without hitting GitHub API limits.
-   Signed-in users additionally get changes since the index was built live from the API.
+3. **Comments are read live from the GitHub API** by every page (issues of the IG repo carrying an
+   `ig-review` anchor block, filtered to the page's branch). Requests revalidate with ETags, so an
+   unchanged list costs nothing for signed-in users (5000 requests/hour each). Readers who are not signed in
+   share GitHub's 60 requests/hour per network and pay even for unchanged answers, so their pages reuse a
+   cached answer for 60 s. Every answer is cached in `localStorage` and used when GitHub refuses or is offline. Nothing is written to the published site, so comments never trigger a site rebuild.
+4. **CI only labels** new or edited review issues (`tools/build_index.py --apply-labels`), because
+   commenters usually cannot set labels themselves.
 
 ### Two modes, chosen by branch name
 
@@ -50,15 +54,12 @@ located on this page*.
    ```yaml
    - uses: actions/checkout@v4
      with: { repository: HL7Austria/ig-review, path: ig-review-tool }
-   - name: Add review tool and comment index
+   - name: Add review tool
      continue-on-error: true
-     env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-     run: |
-       python3 ig-review-tool/tools/inject.py output --repo ${{ github.repository }} --branch "$BRANCH" --commit ${{ github.sha }}
-       python3 ig-review-tool/tools/build_index.py --repo ${{ github.repository }} --branch "$BRANCH" --out output/review-index.json
+     run: python3 ig-review-tool/tools/inject.py output --repo ${{ github.repository }} --branch "$BRANCH" --commit ${{ github.sha }}
    ```
-2. Add a workflow that relabels the issue and republishes `review-index.json` on issue/comment events
-   (see `AIST-TrustworthyAI-R5/.github/workflows/review-index.yml`).
+2. Add a workflow that labels review issues on issue events
+   (see `AIST-TrustworthyAI-R5/.github/workflows/review-labels.yml`).
 3. Install the GitHub App **hl7-austria-ig-review** on the IG repository (issues: read & write).
 
 ## Sign-in
